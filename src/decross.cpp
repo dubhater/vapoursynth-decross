@@ -230,7 +230,7 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
         uint8_t* pDestU = vsapi->getWritePtr(dst, 1) + nDestPitchU;
         uint8_t* pDestV = vsapi->getWritePtr(dst, 2) + nDestPitchU;
 
-        uint8_t* pEdgeBuffer = new uint8_t[nRowSizeU];
+        uint8_t* pEdgeBuffer = (uint8_t *)malloc(nRowSizeU);
 
         int skip = 1 << subSamplingH;
 
@@ -384,7 +384,7 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
             pDestV += nDestPitchU;
         }
 
-        delete[] pEdgeBuffer;
+        free(pEdgeBuffer);
 
         vsapi->freeFrame(srcP);
         vsapi->freeFrame(src);
