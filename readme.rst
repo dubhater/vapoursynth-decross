@@ -8,8 +8,6 @@ matching or deinterlacing.
 
 The luma is returned unchanged.
 
-Currently only x86 systems are supported.
-
 This is a port of the DeCross Avisynth plugin, which is in turn based
 on the AviUtl plugin CrossColor.
 

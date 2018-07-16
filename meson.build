@@ -21,9 +21,7 @@ ldflags = [
 host_cpu_family = host_machine.cpu_family()
 
 if host_cpu_family.startswith('x86')
-  cflags += ['-mfpmath=sse', '-msse2']
-else
-  error('Currently only x86 systems are supported.')
+  cflags += ['-mfpmath=sse', '-msse2', '-DDECROSS_X86=1']
 endif
 
 

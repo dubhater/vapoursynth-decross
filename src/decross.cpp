@@ -2,7 +2,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined (DECROSS_X86)
 #include <emmintrin.h>
+#endif
 
 #include <VapourSynth.h>
 #include <VSHelper.h>
@@ -38,6 +40,7 @@ static void VS_CC deCrossInit(VSMap *in, VSMap *out, void **instanceData, VSNode
 
 
 static FORCE_INLINE bool Diff(const uint8_t* pDiff0, const uint8_t* pDiff1, const int nPos, int& nMiniDiff) {
+#if defined (DECROSS_X86)
     __m128i mDiff0 = _mm_loadl_epi64((const __m128i *)&pDiff0[nPos]);
     __m128i mDiff1 = _mm_loadl_epi64((const __m128i *)pDiff1);
 
@@ -49,16 +52,23 @@ static FORCE_INLINE bool Diff(const uint8_t* pDiff0, const uint8_t* pDiff1, cons
         return true;
     }
     return false;
-}
+#else
+    int nDiff = 0;
 
+    for (int i = 0; i < 8; i++)
+        nDiff += std::abs(pDiff0[i + nPos] - pDiff1[i]);
 
-static FORCE_INLINE __m128i mm_absdiff_epu8(const __m128i &a, const __m128i &b) {
-    return _mm_or_si128(_mm_subs_epu8(a, b),
-                        _mm_subs_epu8(b, a));
+    if (nDiff < nMiniDiff) {
+        nMiniDiff = nDiff;
+        return true;
+    }
+    return false;
+#endif
 }
 
 
 static FORCE_INLINE void EdgeCheck(const uint8_t* pSrc, uint8_t* pEdgeBuffer, const int nRowSizeU, const int nYThreshold, const int nMargin) {
+#if defined (DECROSS_X86)
     __m128i mYThreshold = _mm_set1_epi8(nYThreshold - 128);
     __m128i bytes_128 = _mm_set1_epi8(128);
 
@@ -71,9 +81,11 @@ static FORCE_INLINE void EdgeCheck(const uint8_t* pSrc, uint8_t* pEdgeBuffer, co
         __m128i mCenter_128 = _mm_sub_epi8(mCenter, bytes_128);
         __m128i mRight_128 = _mm_sub_epi8(mRight, bytes_128);
 
-        __m128i mEdge = _mm_and_si128(_mm_cmpgt_epi8(_mm_sub_epi8(mm_absdiff_epu8(mLeft, mRight),
-                                                                  bytes_128),
-                                                     mYThreshold),
+        __m128i abs_diff_left_right = _mm_or_si128(_mm_subs_epu8(mLeft, mRight),
+                                                   _mm_subs_epu8(mRight, mLeft));
+        abs_diff_left_right = _mm_sub_epi8(abs_diff_left_right, bytes_128);
+
+        __m128i mEdge = _mm_and_si128(_mm_cmpgt_epi8(abs_diff_left_right, mYThreshold),
                                       _mm_or_si128(_mm_and_si128(_mm_cmpgt_epi8(mCenter_128, mLeft_128),
                                                                  _mm_cmpgt_epi8(mRight_128, mCenter_128)),
                                                    _mm_and_si128(_mm_cmpgt_epi8(mLeft_128, mCenter_128),
@@ -86,14 +98,56 @@ static FORCE_INLINE void EdgeCheck(const uint8_t* pSrc, uint8_t* pEdgeBuffer, co
                                                                           mEdge));
         }
     }
+#else
+    for (int x = 4; x < nRowSizeU - 4; x++) {
+        int left = pSrc[x * 2 - 1];
+        int center = pSrc[x * 2];
+        int right = pSrc[x * 2 + 1];
+
+        bool edge =
+                std::abs(left - right) > nYThreshold &&
+                ((center > left && right > center) || (left > center && center > right));
+
+        for (int i = -nMargin; i <= nMargin; i++)
+            pEdgeBuffer[x + i] = pEdgeBuffer[x + i] || edge;
+    }
+#endif
 }
 
 
-static FORCE_INLINE __m128i select_eq(const __m128i &a, const __m128i &b, const __m128i &c, const __m128i &d) {
-    __m128i mask = _mm_cmpeq_epi8(a, b);
+static FORCE_INLINE void AverageChroma(const uint8_t *pSrcU, const uint8_t *pSrcV, const uint8_t *pSrcUMini, const uint8_t *pSrcVMini, uint8_t *pDestU, uint8_t *pDestV, const uint8_t *pEdgeBuffer, int nX) {
+#if defined (DECROSS_X86)
+    __m128i mSrcU = _mm_cvtsi32_si128(*(const int *)&pSrcU[nX]);
+    __m128i mSrcV = _mm_cvtsi32_si128(*(const int *)&pSrcV[nX]);
 
-    return _mm_or_si128(_mm_and_si128(mask, c),
-                        _mm_andnot_si128(mask, d));
+    __m128i mSrcUMini = _mm_cvtsi32_si128(*(const int *)&pSrcUMini[nX]);
+    __m128i mSrcVMini = _mm_cvtsi32_si128(*(const int *)&pSrcVMini[nX]);
+
+    __m128i mEdge = _mm_cvtsi32_si128(*(const int *)&pEdgeBuffer[nX]);
+
+    __m128i mBlendColorU = _mm_avg_epu8(mSrcU, mSrcUMini);
+    __m128i mBlendColorV = _mm_avg_epu8(mSrcV, mSrcVMini);
+
+    __m128i mask = _mm_cmpeq_epi8(mEdge, _mm_setzero_si128());
+
+    __m128i mDestU = _mm_or_si128(_mm_and_si128(mask, mSrcU),
+                                  _mm_andnot_si128(mask, mBlendColorU));
+    __m128i mDestV = _mm_or_si128(_mm_and_si128(mask, mSrcV),
+                                  _mm_andnot_si128(mask, mBlendColorV));
+
+    *(int *)&pDestU[nX] = _mm_cvtsi128_si32(mDestU);
+    *(int *)&pDestV[nX] = _mm_cvtsi128_si32(mDestV);
+#else
+    for (int i = 0; i < 4; i++) {
+        if (pEdgeBuffer[nX + i] == 0) {
+            pDestU[nX + i] = pSrcU[nX + i];
+            pDestV[nX + i] = pSrcV[nX + i];
+        } else {
+            pDestU[nX + i] = (pSrcU[nX + i] + pSrcUMini[nX + i] + 1) >> 1;
+            pDestV[nX + i] = (pSrcV[nX + i] + pSrcVMini[nX + i] + 1) >> 1;
+        }
+    }
+#endif
 }
 
 
@@ -283,21 +337,7 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
                             if (Diff(pSrcFB + nX2, pSrc + nX2, +2, nMiniDiff)) { pSrcUMini = pSrcUFBB + 1; pSrcVMini = pSrcVFBB + 1; }
                         }
 
-                        __m128i mSrcU = _mm_cvtsi32_si128(*(const int *)&pSrcU[nX]);
-                        __m128i mSrcV = _mm_cvtsi32_si128(*(const int *)&pSrcV[nX]);
-
-                        __m128i mSrcUMini = _mm_cvtsi32_si128(*(const int *)&pSrcUMini[nX]);
-                        __m128i mSrcVMini = _mm_cvtsi32_si128(*(const int *)&pSrcVMini[nX]);
-
-                        __m128i mEdge = _mm_cvtsi32_si128(*(const int *)&pEdgeBuffer[nX]);
-
-                        __m128i mBlendColorU = _mm_avg_epu8(mSrcU, mSrcUMini);
-                        __m128i mBlendColorV = _mm_avg_epu8(mSrcV, mSrcVMini);
-
-                        __m128i mZero = _mm_setzero_si128();
-
-                        *(int *)&pDestU[nX] = _mm_cvtsi128_si32(select_eq(mEdge, mZero, mSrcU, mBlendColorU));
-                        *(int *)&pDestV[nX] = _mm_cvtsi128_si32(select_eq(mEdge, mZero, mSrcV, mBlendColorV));
+                        AverageChroma(pSrcU, pSrcV, pSrcUMini, pSrcVMini, pDestU, pDestV, pEdgeBuffer, nX);
                     }
                 }
             }
