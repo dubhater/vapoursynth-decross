@@ -52,48 +52,34 @@ static FORCE_INLINE bool Diff(const uint8_t* pDiff0, const uint8_t* pDiff1, cons
 }
 
 
-static FORCE_INLINE __m128i mm_absdiff_epu16(const __m128i &a, const __m128i &b) {
-    return _mm_or_si128(_mm_subs_epu16(a, b),
-                        _mm_subs_epu16(b, a));
+static FORCE_INLINE __m128i mm_absdiff_epu8(const __m128i &a, const __m128i &b) {
+    return _mm_or_si128(_mm_subs_epu8(a, b),
+                        _mm_subs_epu8(b, a));
 }
 
 
 static FORCE_INLINE void EdgeCheck(const uint8_t* pSrc, uint8_t* pEdgeBuffer, const int nRowSizeU, const int nYThreshold, const int nMargin) {
-    __m128i mYThreshold = _mm_set1_epi16(nYThreshold);
-    __m128i mYMask = _mm_set1_epi16(0x00ff);
-    __m128i mZero = _mm_setzero_si128();
+    __m128i mYThreshold = _mm_set1_epi8(nYThreshold - 128);
+    __m128i bytes_128 = _mm_set1_epi8(128);
 
-    int nX;
-    for (nX = 4; nX < nRowSizeU - 4; nX += 4) {
+    for (int nX = 4; nX < nRowSizeU - 4; nX += 4) {
         __m128i mLeft   = _mm_loadl_epi64((const __m128i *)&pSrc[nX * 2 - 1]);
         __m128i mCenter = _mm_loadl_epi64((const __m128i *)&pSrc[nX * 2]);
         __m128i mRight  = _mm_loadl_epi64((const __m128i *)&pSrc[nX * 2 + 1]);
 
-        __m128i mLeft1   = _mm_and_si128(mLeft, mYMask);
-        __m128i mCenter1 = _mm_and_si128(mCenter, mYMask);
-        __m128i mRight1  = _mm_and_si128(mRight, mYMask);
+        __m128i mLeft_128 = _mm_sub_epi8(mLeft, bytes_128);
+        __m128i mCenter_128 = _mm_sub_epi8(mCenter, bytes_128);
+        __m128i mRight_128 = _mm_sub_epi8(mRight, bytes_128);
 
-        __m128i mEdge1 = _mm_and_si128(_mm_cmpgt_epi16(mm_absdiff_epu16(mLeft1, mRight1),
-                                                       mYThreshold),
-                                       _mm_or_si128(_mm_and_si128(_mm_cmpgt_epi16(mCenter1, mLeft1),
-                                                                  _mm_cmpgt_epi16(mRight1, mCenter1)),
-                                                    _mm_and_si128(_mm_cmpgt_epi16(mLeft1, mCenter1),
-                                                                  _mm_cmpgt_epi16(mCenter1, mRight1))));
+        __m128i mEdge = _mm_and_si128(_mm_cmpgt_epi8(_mm_sub_epi8(mm_absdiff_epu8(mLeft, mRight),
+                                                                  bytes_128),
+                                                     mYThreshold),
+                                      _mm_or_si128(_mm_and_si128(_mm_cmpgt_epi8(mCenter_128, mLeft_128),
+                                                                 _mm_cmpgt_epi8(mRight_128, mCenter_128)),
+                                                   _mm_and_si128(_mm_cmpgt_epi8(mLeft_128, mCenter_128),
+                                                                 _mm_cmpgt_epi8(mCenter_128, mRight_128))));
 
-        __m128i mEdge = _mm_packs_epi16(mEdge1, mZero);
-
-        __m128i mLeft2   = _mm_srli_epi16(mLeft, 8);
-        __m128i mCenter2 = _mm_srli_epi16(mCenter, 8);
-        __m128i mRight2  = _mm_srli_epi16(mRight, 8);
-
-        __m128i mEdge2 = _mm_and_si128(_mm_cmpgt_epi16(mm_absdiff_epu16(mLeft2, mRight2),
-                                                       mYThreshold),
-                                       _mm_or_si128(_mm_and_si128(_mm_cmpgt_epi16(mCenter2, mLeft2),
-                                                                  _mm_cmpgt_epi16(mRight2, mCenter2)),
-                                                    _mm_and_si128(_mm_cmpgt_epi16(mLeft2, mCenter2),
-                                                                  _mm_cmpgt_epi16(mCenter2, mRight2))));
-
-        mEdge = _mm_or_si128(mEdge, _mm_packs_epi16(mEdge2, mZero));
+        mEdge = _mm_packs_epi16(mEdge, mEdge);
 
         for (int i = -nMargin; i <= nMargin; i++) {
             *(int *)&pEdgeBuffer[nX + i] = _mm_cvtsi128_si32(_mm_or_si128(_mm_cvtsi32_si128(*(const int *)&pEdgeBuffer[nX + i]),
